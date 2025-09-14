@@ -12,6 +12,9 @@ struct HypergraphParams {
     int maxVertexId;
     int payloadCapacity; // capacity for flattened payload buffers
     int alignment; // padding alignment for payload chunks
+    bool enableTemporal = false; // enable temporal counting mode
+    bool temporalSynthetic = false; // use deterministic synthetic temporal window
+    std::string temporalDeltasPath; // optional path to deltas file
 };
 
 // Forward declarations

@@ -19,6 +19,9 @@
 #include "../include/graphGeneration.hpp"
 #include "../include/motif.hpp"
 #include "../include/motif_update.hpp"
+#include "../include/temporal_structure.hpp"
+#include "../include/temporal_adjacency.hpp"
+#include "../include/temporal_count.hpp"
 
 // Device helpers and moved kernels are provided via kernel headers
 #include "../kernel/device_utils.cuh"
@@ -254,5 +257,127 @@ int main(int argc, char* argv[]) {
     delete[] cbstV2HKeys;
     delete[] cbstH2HKeys;
     
+    // --------------------------
+    // Temporal motif counting (strict-inc) — gated by --temporal
+    // --------------------------
+    if (params.enableTemporal) {
+        TemporalHypergraphIndex oldWin(params.payloadCapacity, params.alignment);
+        TemporalHypergraphIndex newWin(params.payloadCapacity, params.alignment);
+        // Synthetic temporal window (deterministic) to validate counts if requested
+        if (params.temporalSynthetic) {
+            // Build 3 hyperedges with shared vertices across layers to force counts
+            // Older: 1:{1,2}, 2:{2,3}, 3:{1,3}
+            // Middle: 1:{1,2}, 2:{2,3}, 3:{1,3}
+            // Newest: 1:{1,2}, 2:{2,3}, 3:{1,3}
+            std::vector<std::vector<int>> L = {{1,2},{2,3},{1,3}};
+            auto [Lflat, Lstarts] = flatten(L, "Temporal Synthetic H2V Layer");
+            auto [cbstStarts, cbstKeys] = prepareCBSTData(Lstarts);
+            // Older/Middle/Newest for oldWin are same synthetic for baseline
+            oldWin.h2v.construct(TemporalLayer::Older,  cbstKeys, cbstStarts, 3, Lflat.data(), static_cast<int>(Lflat.size()));
+            oldWin.h2v.construct(TemporalLayer::Middle, cbstKeys, cbstStarts, 3, Lflat.data(), static_cast<int>(Lflat.size()));
+            oldWin.h2v.construct(TemporalLayer::Newest, cbstKeys, cbstStarts, 3, Lflat.data(), static_cast<int>(Lflat.size()));
+            // Build V2H for synthetic layers
+            auto Lv2h = vertex2hyperedge(L);
+            auto [Lv2hFlat, Lv2hStarts] = flatten(Lv2h, "Temporal Synthetic V2H Layer");
+            auto [cbstLv2hStarts, cbstLv2hKeys] = prepareCBSTData(Lv2hStarts);
+            int numV_L = static_cast<int>(Lv2h.size());
+            oldWin.v2h.construct(TemporalLayer::Older,  cbstLv2hKeys, cbstLv2hStarts, numV_L, Lv2hFlat.data(), static_cast<int>(Lv2hFlat.size()));
+            oldWin.v2h.construct(TemporalLayer::Middle, cbstLv2hKeys, cbstLv2hStarts, numV_L, Lv2hFlat.data(), static_cast<int>(Lv2hFlat.size()));
+            oldWin.v2h.construct(TemporalLayer::Newest, cbstLv2hKeys, cbstLv2hStarts, numV_L, Lv2hFlat.data(), static_cast<int>(Lv2hFlat.size()));
+            // New window: change Newest to break/add edges to induce non-zero delta
+            std::vector<std::vector<int>> L2 = {{1,2},{2,3},{1,2,3}}; // add vertex 2 to edge 3
+            auto [L2flat, L2starts] = flatten(L2, "Temporal Synthetic H2V Layer Newest");
+            auto [cbstStarts2, cbstKeys2] = prepareCBSTData(L2starts);
+            newWin.h2v.construct(TemporalLayer::Older,  cbstKeys,  cbstStarts, 3, Lflat.data(),  static_cast<int>(Lflat.size()));
+            newWin.h2v.construct(TemporalLayer::Middle, cbstKeys,  cbstStarts, 3, Lflat.data(),  static_cast<int>(Lflat.size()));
+            newWin.h2v.construct(TemporalLayer::Newest, cbstKeys2, cbstStarts2,3, L2flat.data(), static_cast<int>(L2flat.size()));
+            // V2H for new window: Older/Middle from L, Newest from L2
+            auto L2v2h = vertex2hyperedge(L2);
+            auto [L2v2hFlat, L2v2hStarts] = flatten(L2v2h, "Temporal Synthetic V2H Layer Newest");
+            auto [cbstL2v2hStarts, cbstL2v2hKeys] = prepareCBSTData(L2v2hStarts);
+            int numV_L2 = static_cast<int>(L2v2h.size());
+            newWin.v2h.construct(TemporalLayer::Older,  cbstLv2hKeys,  cbstLv2hStarts, numV_L,  Lv2hFlat.data(),  static_cast<int>(Lv2hFlat.size()));
+            newWin.v2h.construct(TemporalLayer::Middle, cbstLv2hKeys,  cbstLv2hStarts, numV_L,  Lv2hFlat.data(),  static_cast<int>(Lv2hFlat.size()));
+            newWin.v2h.construct(TemporalLayer::Newest, cbstL2v2hKeys, cbstL2v2hStarts, numV_L2, L2v2hFlat.data(), static_cast<int>(L2v2hFlat.size()));
+            // Optionally apply extra deltas on top of the synthetic Newest
+            if (!params.temporalDeltasPath.empty()) {
+                applyTemporalDeltasFromFile(params.temporalDeltasPath, newWin);
+            }
+        } else {
+            auto [tH2VStartsVals, tH2VKeys] = prepareCBSTData(h2vStartOffsets);
+            oldWin.h2v.construct(TemporalLayer::Older,
+                          tH2VKeys, tH2VStartsVals, params.numHyperedges,
+                          h2vFlatVertexIds.data(), static_cast<int>(h2vFlatVertexIds.size()));
+            oldWin.h2v.construct(TemporalLayer::Middle,
+                          tH2VKeys, tH2VStartsVals, params.numHyperedges,
+                          h2vFlatVertexIds.data(), static_cast<int>(h2vFlatVertexIds.size()));
+            oldWin.h2v.construct(TemporalLayer::Newest,
+                          tH2VKeys, tH2VStartsVals, params.numHyperedges,
+                          h2vFlatVertexIds.data(), static_cast<int>(h2vFlatVertexIds.size()));
+            // Also construct V2H for baseline layers
+            auto [tV2HStartsVals, tV2HKeys] = prepareCBSTData(v2hStartOffsets);
+            oldWin.v2h.construct(TemporalLayer::Older,
+                          tV2HKeys, tV2HStartsVals, numVertices,
+                          v2hFlatHyperedgeIds.data(), static_cast<int>(v2hFlatHyperedgeIds.size()));
+            oldWin.v2h.construct(TemporalLayer::Middle,
+                          tV2HKeys, tV2HStartsVals, numVertices,
+                          v2hFlatHyperedgeIds.data(), static_cast<int>(v2hFlatHyperedgeIds.size()));
+            oldWin.v2h.construct(TemporalLayer::Newest,
+                          tV2HKeys, tV2HStartsVals, numVertices,
+                          v2hFlatHyperedgeIds.data(), static_cast<int>(v2hFlatHyperedgeIds.size()));
+        }
+
+        // Baseline window count
+        std::vector<int> temporalCounts;
+        computeTemporalMotifCountsStrictInc(oldWin, temporalCounts);
+        std::cout << "Temporal strict-inc counts (30 bins): ";
+        for (int i = 0; i < 30; ++i) std::cout << temporalCounts[i] << (i + 1 < 30 ? ' ' : '\n');
+
+        if (!params.temporalSynthetic) {
+            // Phase 3: simulate window rotation where Newest changes to updated state
+            // Old window (A,B,C) all baseline; New window (B,C,D) with D = updated
+            auto [tH2VStartsVals, tH2VKeys] = prepareCBSTData(h2vStartOffsets);
+            newWin.h2v.construct(TemporalLayer::Older,
+                                 tH2VKeys, tH2VStartsVals, params.numHyperedges,
+                                 h2vFlatVertexIds.data(), static_cast<int>(h2vFlatVertexIds.size()));
+            newWin.h2v.construct(TemporalLayer::Middle,
+                                 tH2VKeys, tH2VStartsVals, params.numHyperedges,
+                                 h2vFlatVertexIds.data(), static_cast<int>(h2vFlatVertexIds.size()));
+            newWin.h2v.construct(TemporalLayer::Newest,
+                                 cbstH2VKeysNew, cbstH2VStartsNew, maxId,
+                                 h2vFlatValsNew.data(), static_cast<int>(h2vFlatValsNew.size()));
+            // Construct V2H for new window: Older/Middle baseline, Newest updated
+            auto [tV2HStartsVals, tV2HKeys] = prepareCBSTData(v2hStartOffsets);
+            newWin.v2h.construct(TemporalLayer::Older,
+                                 tV2HKeys, tV2HStartsVals, numVertices,
+                                 v2hFlatHyperedgeIds.data(), static_cast<int>(v2hFlatHyperedgeIds.size()));
+            newWin.v2h.construct(TemporalLayer::Middle,
+                                 tV2HKeys, tV2HStartsVals, numVertices,
+                                 v2hFlatHyperedgeIds.data(), static_cast<int>(v2hFlatHyperedgeIds.size()));
+            newWin.v2h.construct(TemporalLayer::Newest,
+                                 cbstV2HKeysNew, cbstV2HStartsNew, static_cast<int>(updatedV2H.size()),
+                                 v2hFlatValsNew.data(), static_cast<int>(v2hFlatValsNew.size()));
+
+            // Optional: apply external deltas onto Newest if provided
+            if (!params.temporalDeltasPath.empty()) {
+                // Rotate oldWin to simulate (B,C,D) from (A,B,C)
+                oldWin.rotate();
+                oldWin.h2v.construct(TemporalLayer::Newest,
+                                     cbstH2VKeysNew, cbstH2VStartsNew, maxId,
+                                     h2vFlatValsNew.data(), static_cast<int>(h2vFlatValsNew.size()));
+                oldWin.v2h.construct(TemporalLayer::Newest,
+                                     cbstV2HKeysNew, cbstV2HStartsNew, static_cast<int>(updatedV2H.size()),
+                                     v2hFlatValsNew.data(), static_cast<int>(v2hFlatValsNew.size()));
+                // Apply deltas onto newWin Newest
+                applyTemporalDeltasFromFile(params.temporalDeltasPath, newWin);
+            }
+        }
+
+        std::vector<int> deltaCounts;
+        computeTemporalMotifCountsStrictIncDelta(oldWin, newWin, deltaCounts);
+        std::cout << "Temporal strict-inc delta (30 bins): ";
+        for (int i = 0; i < 30; ++i) std::cout << deltaCounts[i] << (i + 1 < 30 ? ' ' : '\n');
+    }
+
     return 0;
 }

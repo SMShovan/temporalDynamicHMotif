@@ -2,7 +2,9 @@
 #define STRUCTURE_HPP
 
 #include <vector>
+#if __has_include(<cuda_runtime.h>)
 #include <cuda_runtime.h>
+#endif
 
 // CBST node definition shared by kernels across translation units
 struct CBSTNode {

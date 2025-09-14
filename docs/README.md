@@ -1,61 +1,65 @@
-# Dynamic Hypergraph Analysis Project
+# Temporal Dynamic Hypergraph Motif Analysis – Developer Guide
 
-A CUDA-based implementation for motif counting in dynamic hypergraphs using Complete Binary Search Trees and parallel processing.
+## Overview
 
-## Project Overview
+This project performs GPU-accelerated motif counting on dynamic hypergraphs and extends to temporal motifs across three timestamps (Older, Middle, Newest) with strictly-increasing time ordering. Data is stored in GPU-resident Complete Binary Search Trees (CBST) for efficient updates.
 
-This project implements:
-- **Hypergraph Data Structures**: Hyperedge-to-Vertex, Vertex-to-Hyperedge, and Hyperedge-to-Hyperedge mappings
-- **Dynamic Data Management**: Complete Binary Search Trees on GPU for efficient insertion/deletion operations
-- **Motif Counting**: Parallel counting of 30 different motif types in hypergraph triangles
-- **GPU Acceleration**: CUDA kernels for high-performance computation
+Key components:
+- Hypergraph maps: H2V (hyperedge→vertices), V2H (vertex→hyperedges), H2H (adjacency for baseline)
+- Temporal ring buffer: distinct H2V/V2H per layer, rotate each step
+- Temporal motifs: 30-bin counts for strictly-increasing triples (t-2, t-1, t)
 
-## Development Workflow
-
-### Local Development + Cluster Execution
-
-This project is designed for local development with cluster execution:
-
-1. **Edit code locally** on your development machine
-2. **Sync changes to cluster** using rsync
-3. **Compile and run on cluster** with CUDA runtime
-
-### Sync Commands
+## Build
 
 ```bash
-# Sync project to cluster
-rsync -avz --progress /path/to/local/dynamicHyperGraph/ sskg8@mill.mst.edu:~/dynamicHyperGraph/
-
-# Sync from cluster to local (if needed)
-rsync -avz --progress sskg8@mill.mst.edu:~/dynamicHyperGraph/ /path/to/local/dynamicHyperGraph/
+make clean && make -j
 ```
 
-## Running on Cluster
+## Run
 
-### Load CUDA Module
+Baseline (non-temporal):
 ```bash
-module load cuda-toolkit/12.5
+make run
+make run-custom ARGS="<N> <K> <vmin> <vmax> <capacity> [alignment=4]"
 ```
 
-### Build and Run
+Temporal:
 ```bash
-nvcc main.cu -o main && ./main
+make run-temporal
+make run-temporal-deltas DELTA=updates.txt
+make run-temporal-deltas-synth DELTA=updates_synth.txt
 ```
 
-## Project Structure
+Direct execution (temporal flags):
+```bash
+./build/main <N> <K> <vmin> <vmax> <capacity> [alignment=4] --temporal [--temporal-synthetic] [--temporal-deltas=PATH]
+```
 
-- `main.cu` - Main CUDA implementation with complete hypergraph processing pipeline
-- `README.md` - This file
+Delta file format:
+```
+A <hyperedgeId> v1 v2 v3 ...  # add vertices to H2V[Newest][h]
+R <hyperedgeId> v1 v2 v3 ...  # remove vertices from H2V[Newest][h]
+```
 
-## Requirements
+## Code Map
 
-- CUDA Toolkit 12.5+
-- NVIDIA GPU with CUDA support
-- Thrust library (included with CUDA)
+- include/
+  - structure.hpp: CBST structures and host APIs
+  - temporal_structure.hpp: 3-slot ring buffer wrappers for H2V/V2H
+  - temporal_adjacency.hpp: temporal index bundle (H2V/V2H)
+  - temporal_count.hpp: temporal counting interfaces
+  - motif.hpp, motif_update.hpp: baseline motif counting
+  - utils.hpp, printUtils.hpp, graphGeneration.hpp
+- structure/operations.cu: CBST kernels (construct/fill/unfill)
+- kernel/: device utilities and baseline kernels
+- src/
+  - main.cu: entry point (baseline + temporal flows)
+  - temporal_count.cu: adjacency-driven temporal kernel + delta ingestion
+  - temporal_structure.cpp: host wrappers for temporal CBSTs
+  - HMotifCount.cu, HMotifCountUpdate.cu, graphGeneration.cpp
+- utils/: flatten/print/utils
 
-## Features
+## Notes
 
-- **Dynamic Updates**: Real-time insertion and deletion of hyperedges
-- **Memory Efficient**: Flattened array representations with GPU-optimized padding
-- **Parallel Processing**: CUDA kernels for motif counting and tree operations
-- **Scalable**: Designed for large hypergraph datasets
+- H2H is computed on-the-fly for baseline. Temporal path uses H2V/V2H intersections on device.
+- Deltas are mirrored to V2H for the Newest layer to drive adjacency on GPU.

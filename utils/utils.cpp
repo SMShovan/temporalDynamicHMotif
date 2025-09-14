@@ -4,13 +4,14 @@
 #include <iostream>
 #include <cstdlib>
 #include <set>
+#include <cstring>
 
 // Function to parse and validate command line arguments
 bool parseCommandLineArgs(int argc, char* argv[], HypergraphParams& params) {
     // Check argument count (alignment is optional)
-    if (argc < 6 || argc > 7) {
-        std::cerr << "Usage: " << argv[0] << " <num_hyperedges> <max_vertices_per_hyperedge> <min_vertex_id> <max_vertex_id> <payload_capacity> [alignment=4]" << std::endl;
-        std::cerr << "Example: " << argv[0] << " 8 5 1 100 4096 8" << std::endl;
+    if (argc < 6) {
+        std::cerr << "Usage: " << argv[0] << " <num_hyperedges> <max_vertices_per_hyperedge> <min_vertex_id> <max_vertex_id> <payload_capacity> [alignment=4] [--temporal] [--temporal-synthetic] [--temporal-deltas=PATH]" << std::endl;
+        std::cerr << "Example: " << argv[0] << " 8 5 1 100 4096 8 --temporal --temporal-synthetic --temporal-deltas=updates.txt" << std::endl;
         return false;
     }
     
@@ -20,7 +21,25 @@ bool parseCommandLineArgs(int argc, char* argv[], HypergraphParams& params) {
     params.minVertexId = std::atoi(argv[3]);
     params.maxVertexId = std::atoi(argv[4]);
     params.payloadCapacity = std::atoi(argv[5]);
-    params.alignment = (argc == 7) ? std::atoi(argv[6]) : 4;
+    params.alignment = 4;
+    params.enableTemporal = false;
+    params.temporalSynthetic = false;
+    if (argc >= 7) {
+        // Try to parse argv[6] as alignment if numeric, else treat as flags
+        char* endptr = nullptr;
+        long maybeAlign = std::strtol(argv[6], &endptr, 10);
+        int nextArg = 6;
+        if (endptr && *endptr == '\0') {
+            params.alignment = static_cast<int>(maybeAlign);
+            nextArg = 7;
+        }
+        for (int i = nextArg; i < argc; ++i) {
+            std::string a = std::string(argv[i]);
+            if (a == "--temporal") params.enableTemporal = true;
+            else if (a == "--temporal-synthetic") params.temporalSynthetic = true;
+            else if (a.rfind("--temporal-deltas=", 0) == 0) params.temporalDeltasPath = a.substr(strlen("--temporal-deltas="));
+        }
+    }
     
     // Validate arguments
     if (params.numHyperedges <= 0 || params.maxVerticesPerHyperedge <= 0 || 
